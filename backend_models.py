@@ -1,0 +1,224 @@
+# backend/backend_models.py
+# All backend code: loading, processing, five algorithms, metrics, comparison.
+
+import pandas as pd
+import numpy as np
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    classification_report,
+    roc_curve,
+    auc
+)
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+
+
+# --------------- Data loading ---------------
+
+def load_dataset(path: str) -> pd.DataFrame:
+    """
+    Load CSV/Excel dataset from local path.
+    The file must be provided by the user; no preloaded data.
+    """
+    if path.lower().endswith(".csv"):
+        return pd.read_csv(path)
+    elif path.lower().endswith((".xlsx", ".xls")):
+        return pd.read_excel(path)
+    else:
+        raise ValueError("Unsupported file format. Use CSV or Excel.")
+
+
+# --------------- Processing (shared for all POCs) ---------------
+
+def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
+    """
+    Full processing pipeline BEFORE EDA and BEFORE training:
+    - Drop unwanted columns (optional – done in caller)
+    - Fill missing values (numeric->median, categorical->mode)
+    - Outlier clipping (IQR) on numeric
+    - Encode categoricals (LabelEncoder for binary, one-hot for multi-class)
+    Returns:
+    - X_processed (features)
+    - y (target)
+    - label_encoders (for binary categoricals)
+    """
+    if target_col not in df.columns:
+        raise ValueError(f"Target column '{target_col}' not found.")
+
+    # Fill missing values
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
+
+    for col in num_cols:
+        df[col].fillna(df[col].median(), inplace=True)
+
+    for col in cat_cols:
+        if df[col].mode().empty:
+            df[col].fillna("Unknown", inplace=True)
+        else:
+            df[col].fillna(df[col].mode()[0], inplace=True)
+
+    # Outlier handling: IQR clipping
+    for col in num_cols:
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        low = Q1 - 1.5 * IQR
+        high = Q3 + 1.5 * IQR
+        df[col] = df[col].clip(low, high)
+
+    # Split into X and y
+    y = df[target_col]
+    X = df.drop(columns=[target_col])
+
+    # Encode categoricals
+    num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+    cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
+
+    X_enc = X.copy()
+    label_encoders = {}
+
+    # Label encode binary categoricals
+    for col in cat_cols:
+        if X_enc[col].nunique() == 2:
+            le = LabelEncoder()
+            X_enc[col] = le.fit_transform(X_enc[col])
+            label_encoders[col] = le
+
+    # One-hot encode remaining categoricals
+    multi_cat = [c for c in cat_cols if c not in label_encoders]
+    if multi_cat:
+        X_enc = pd.get_dummies(X_enc, columns=multi_cat, drop_first=True)
+
+    return X_enc, y, label_encoders
+
+
+# --------------- Train/test split ---------------
+
+def create_train_test_splits(X, y, test_size=0.3, random_state=42):
+    """
+    Create train/test splits (default 70:30).
+    """
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y
+    )
+    return X_train, X_test, y_train, y_test
+
+
+# --------------- Single algorithm POC helper ---------------
+
+def train_and_evaluate_model(model_name, estimator, X_train, X_test, y_train, y_test):
+    """
+    Single POC: wrap model in a Pipeline (StandardScaler + model),
+    fit, and compute all required metrics.
+    """
+    pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("model", estimator)
+    ])
+
+    pipe.fit(X_train, y_train)
+
+    y_train_pred = pipe.predict(X_train)
+    y_test_pred = pipe.predict(X_test)
+
+    # probabilities for ROC/AUC
+    if hasattr(pipe, "predict_proba"):
+        y_test_proba = pipe.predict_proba(X_test)[:, 1]
+    else:
+        if hasattr(pipe, "decision_function"):
+            scores = pipe.decision_function(X_test)
+            y_test_proba = 1 / (1 + np.exp(-scores))
+        else:
+            y_test_proba = y_test_pred.astype(float)
+
+    train_acc = accuracy_score(y_train, y_train_pred)
+    test_acc = accuracy_score(y_test, y_test_pred)
+    cm = confusion_matrix(y_test, y_test_pred)
+    rep = classification_report(y_test, y_test_pred, output_dict=True)
+
+    fpr, tpr, thresholds = roc_curve(y_test, y_test_proba)
+    roc_auc = auc(fpr, tpr)
+    opt_idx = np.argmax(tpr - fpr)
+    opt_thr = thresholds[opt_idx]
+
+    return {
+        "name": model_name,
+        "pipeline": pipe,
+        "train_acc": train_acc,
+        "test_acc": test_acc,
+        "cm": cm,
+        "report": rep,
+        "fpr": fpr,
+        "tpr": tpr,
+        "thresholds": thresholds,
+        "roc_auc": roc_auc,
+        "opt_thr": opt_thr
+    }
+
+
+# --------------- Train all 5 algorithms (5 POCs) ---------------
+
+def train_all_algorithms(X_train, X_test, y_train, y_test):
+    """
+    Train all 5 algorithms and return a dict of results.
+    """
+    algorithms = {
+    "Logistic Regression": LogisticRegression(max_iter=1000),
+    "Naive Bayes": GaussianNB(),
+    "KNN": KNeighborsClassifier(n_neighbors=5),
+    "Decision Tree": DecisionTreeClassifier(class_weight='balanced', random_state=42),
+    "SVM": SVC(kernel="rbf", probability=True, random_state=42)
+}
+
+
+    results = {}
+    for name, est in algorithms.items():
+        results[name] = train_and_evaluate_model(
+            model_name=name,
+            estimator=est,
+            X_train=X_train,
+            X_test=X_test,
+            y_train=y_train,
+            y_test=y_test
+        )
+    return results
+
+
+# --------------- Build comparison DataFrame ---------------
+
+def build_comparison_table(results: dict) -> pd.DataFrame:
+    """
+    Build a summary table (DataFrame) of metrics for all algorithms.
+    """
+    rows = []
+    for name, res in results.items():
+        rep = res["report"]
+        if "1" in rep:
+            prec = rep["1"]["precision"]
+            rec = rep["1"]["recall"]
+            f1 = rep["1"]["f1-score"]
+        else:
+            prec = rec = f1 = np.nan
+
+        rows.append({
+            "Algorithm": name,
+            "Train Accuracy": res["train_acc"],
+            "Test Accuracy": res["test_acc"],
+            "ROC AUC": res["roc_auc"],
+            "Precision (class 1)": prec,
+            "Recall (class 1)": rec,
+            "F1-score (class 1)": f1
+        })
+
+    comp_df = pd.DataFrame(rows)
+    return comp_df
