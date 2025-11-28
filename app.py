@@ -6,13 +6,18 @@ import pandas as pd
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
+import io
+
 
 from backend_models import (
     load_dataset,
     process_dataset,
     create_train_test_splits,
     train_all_algorithms,
-    build_comparison_table
+    build_comparison_table,
+    export_model,
+    get_model_bytes,
+    load_uploaded_pipeline
 )
 
 st.set_page_config(
@@ -58,7 +63,8 @@ page = st.sidebar.radio(
         "Processing + EDA",
         "Train All Models",
         "POC Details",
-        "Comparison Table"
+        "Comparison Table",
+        "Predict (Saved Model)"
     ]
 )
 
@@ -83,7 +89,7 @@ if page == "Upload & Inspect":
     file = st.file_uploader("Upload hospital dataset (CSV/Excel)", type=["csv", "xlsx", "xls"])
 
     if file is not None:
-        df = load_dataset(file.name)  # for local path usage, for Streamlit use read directly:
+        #df = load_dataset(file.name)  # for local path usage, for Streamlit use read directly:
         df = pd.read_csv(file) if file.name.lower().endswith(".csv") else pd.read_excel(file)
 
         st.session_state.raw_df = df.copy()
@@ -260,3 +266,178 @@ elif page == "Comparison Table":
             })
         )
         st.info("Use this as your comparison matrix for all 5 POCs.")
+        
+        # -----------------------------------------------------------------
+        # NEW DOWNLOAD LOGIC
+        # -----------------------------------------------------------------
+        st.subheader("Download Any Trained Model ⬇️")
+
+        # 1. Get the list of all algorithms
+        algo_names = list(st.session_state.results.keys())
+        
+        # 2. Let the user select a model
+        selected_algo = st.selectbox(
+            "Select the algorithm to download:",
+            options=algo_names,
+            index=0  # Default to the first algorithm
+        )
+        
+        # 3. Retrieve the selected model's pipeline
+        selected_pipeline = st.session_state.results[selected_algo]['pipeline']
+
+        # 4. Convert the model pipeline to downloadable bytes
+        model_bytes = get_model_bytes(selected_pipeline)
+        
+        # 5. Create the download button
+        download_filename = f"{selected_algo}_predictor.joblib"
+        
+        st.download_button(
+            label=f"Download {selected_algo} Model (.joblib)",
+            data=model_bytes,
+            file_name=download_filename,
+            mime="application/octet-stream",
+            help="This file contains the complete scikit-learn pipeline for prediction."
+        )
+        
+        st.caption(f"The downloaded file is named **{download_filename}**.")
+        # -----------------------------------------------------------------
+# PAGE 6: Predict with Saved Model
+elif page == "Predict (Saved Model)":
+    st.header("Step 6 – Predict with Imported Model")
+
+    # 1. Upload Model (Do this once for both methods)
+    st.subheader("1. Load Your Model")
+    model_file = st.file_uploader("Upload .joblib file", type=["joblib"], key="model_loader")
+    
+    pipeline = None
+    if model_file is not None:
+        try:
+            pipeline = load_uploaded_pipeline(model_file)
+            st.success("Model loaded successfully!")
+        except Exception as e:
+            st.error(f"Error loading model: {e}")
+
+    # Only show input options if model is loaded
+    if pipeline is not None:
+        st.divider()
+        st.subheader("2. Enter Patient Data")
+        input_method = st.radio("Choose input method:", ["Manual Entry ✍️", "Upload File 📂"])
+
+        # ---------------------------------------------------------
+        # OPTION A: MANUAL ENTRY
+        # ---------------------------------------------------------
+        if input_method == "Manual Entry ✍️":
+            st.info("Enter details for a single patient below.")
+            
+            with st.form("prediction_form"):
+                st.write("### Patient Details")
+                
+                # --- [IMPORTANT] CUSTOMIZE THESE INPUTS TO MATCH YOUR DATASET COLUMNS ---
+                # Example: If your CSV has 'patient_age', rename "age" to "patient_age" below.
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    val1 = st.number_input("Age", min_value=0, max_value=120, value=30)
+                    val2 = st.selectbox("Gender", ["Male", "Female"])
+                    val3 = st.number_input("Admission Deposit", value=0.0)
+                
+                with c2:
+                    val4 = st.selectbox("Department", ["gynecology", "anesthesia", "radiotherapy", "TB & Chest disease", "surgery"])
+                    val5 = st.selectbox("Type of Admission", ["Trauma", "Emergency", "Urgent"])
+                    val6 = st.number_input("Visitors with Patient", min_value=0, value=2)
+
+                # Submit Button
+                submitted = st.form_submit_button("Predict Result")
+                
+            if submitted:
+                # 1. Create a dictionary with the EXACT column names from your training data
+                input_data = {
+                    "age": [val1],
+                    "gender": [val2],
+                    "Admission_Deposit": [val3],
+                    "Department": [val4],
+                    "Type of Admission": [val5],
+                    "Visitors with Patient": [val6],
+                    # ... add any other columns your model needs ...
+                    
+                    # Dummy target so process_dataset doesn't crash
+                    "long_stay_label": [0] 
+                }
+                
+                # 2. Convert to DataFrame
+                df_single = pd.DataFrame(input_data)
+                
+                st.write("Input Data Preview:", df_single.drop(columns=["long_stay_label"]))
+                
+                try:
+                    # 3. Process the single row (Text -> Numbers)
+                    # We reuse the backend logic to ensure encoding happens
+                    X_single, _, _ = process_dataset(df_single, target_col="long_stay_label")
+                    
+                    # 4. Predict
+                    prediction = pipeline.predict(X_single)[0]
+                    # Check if model supports probability
+                    if hasattr(pipeline, "predict_proba"):
+                        probability = pipeline.predict_proba(X_single)[0][1]
+                    else:
+                        probability = 0.0
+                    
+                    # 5. Show Result
+                    st.divider()
+                    if prediction == 1:
+                        st.error(f"⚠️ Prediction: Long Stay (High Risk) \nProbability: {probability:.2%}")
+                    else:
+                        st.success(f"✅ Prediction: Short Stay (Low Risk) \nProbability: {probability:.2%}")
+                        
+                except Exception as e:
+                    st.error(f"Prediction Error: {e}")
+                    st.warning("Make sure the input fields above match ALL columns used in your training data.")
+
+        # ---------------------------------------------------------
+        # OPTION B: FILE UPLOAD
+        # ---------------------------------------------------------
+        elif input_method == "Upload File 📂":
+            st.info("Upload a CSV/Excel file with multiple patients.")
+            data_file = st.file_uploader("Upload new data", type=["csv", "xlsx"])
+            
+            if data_file is not None:
+                try:
+                    # Load Data
+                    df_new = pd.read_csv(data_file) if data_file.name.lower().endswith(".csv") else pd.read_excel(data_file)
+                    st.write(f"Uploaded {df_new.shape[0]} patients.")
+
+                    if st.button("Run Batch Prediction"):
+                        # Add dummy target if missing
+                        if "long_stay_label" not in df_new.columns:
+                            df_new["long_stay_label"] = 0 
+                        
+                        # Process
+                        X_new, _, _ = process_dataset(df_new, target_col="long_stay_label")
+                        
+                        # Predict
+                        preds = pipeline.predict(X_new)
+                        probs = pipeline.predict_proba(X_new)[:, 1] if hasattr(pipeline, "predict_proba") else [0]*len(preds)
+
+                        # Append results
+                        results_df = df_new.drop(columns=["long_stay_label"]).copy()
+                        results_df["Predicted_Label"] = preds
+                        results_df["Probability_Long_Stay"] = probs
+
+                        st.subheader("Prediction Results")
+                        
+                        # Highlight high risk
+                        def highlight_risk(val):
+                            return 'background-color: #ffcccb' if val == 1 else ''
+
+                        st.dataframe(results_df.style.applymap(highlight_risk, subset=['Predicted_Label']))
+                        
+                        # Download Results
+                        csv = results_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            "Download Predictions as CSV",
+                            csv,
+                            "patient_predictions.csv",
+                            "text/csv"
+                        )
+                except Exception as e:
+                    st.error(f"Error processing file: {e}")

@@ -3,7 +3,8 @@
 
 import pandas as pd
 import numpy as np
-
+import joblib
+import io
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.pipeline import Pipeline
@@ -173,13 +174,12 @@ def train_all_algorithms(X_train, X_test, y_train, y_test):
     Train all 5 algorithms and return a dict of results.
     """
     algorithms = {
-    "Logistic Regression": LogisticRegression(max_iter=1000),
-    "Naive Bayes": GaussianNB(),
-    "KNN": KNeighborsClassifier(n_neighbors=5),
-    "Decision Tree": DecisionTreeClassifier(class_weight='balanced', random_state=42),
-    "SVM": SVC(kernel="rbf", probability=True, random_state=42)
-}
-
+        "Logistic Regression": LogisticRegression(max_iter=1000),
+        "Naive Bayes": GaussianNB(),
+        "KNN": KNeighborsClassifier(n_neighbors=5),
+        "Decision Tree": DecisionTreeClassifier(random_state=42),
+        "SVM": SVC(kernel="rbf", probability=True, random_state=42)
+    }
 
     results = {}
     for name, est in algorithms.items():
@@ -222,3 +222,29 @@ def build_comparison_table(results: dict) -> pd.DataFrame:
 
     comp_df = pd.DataFrame(rows)
     return comp_df
+
+
+# Export in Joblib
+
+def export_model(pipeline, filename="best_model.joblib"):
+    """Saves the trained model pipeline to a file."""
+    try:
+        joblib.dump(pipeline, filename)
+        return f"Model successfully exported to {filename}"
+    except Exception as e:
+        return f"Error exporting model: {e}"
+    
+def get_model_bytes(pipeline):
+    """Serializes the model pipeline to an in-memory byte buffer."""
+    buffer = io.BytesIO()
+    joblib.dump(pipeline, buffer)
+    buffer.seek(0)  # Rewind the buffer to the beginning
+    return buffer.read()
+
+# --- ADD TO BOTTOM OF backend_models.py ---
+
+def load_uploaded_pipeline(file_obj):
+    """
+    Load a pipeline object from a generic file object (uploaded by Streamlit).
+    """
+    return joblib.load(file_obj)
