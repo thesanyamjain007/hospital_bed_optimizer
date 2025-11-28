@@ -45,7 +45,7 @@ Trains 5 algorithms simultaneously:
 
 ### Setup
 ```bash
-git clone https://github.com/your-username/hospital-bed-optimization.git
+git clone https://github.com/thesanyamjain007/hospital_bed_optimizer.git
 cd hospital-bed-optimization
 pip install -r requirements.txt
 streamlit run app.py
