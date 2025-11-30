@@ -29,13 +29,17 @@ Trains 5 algorithms simultaneously:
 - Batch prediction via CSV upload
 
 ## Performance Results
-| Algorithm | Accuracy | ROC AUC | Precision | Recall | F1-Score |
-|-----------|----------|---------|-----------|--------|----------|
-| Decision Tree | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
-| Logistic Regression | 0.983 | 1.000 | 0.972 | 1.000 | 0.986 |
-| Naive Bayes | 0.983 | 0.999 | 0.972 | 1.000 | 0.986 |
-| SVM | 0.900 | 0.976 | 0.892 | 0.943 | 0.917 |
-| KNN | 0.750 | 0.839 | 0.813 | 0.743 | 0.776 |
+### Updated Results on LengthOfStay.csv (no LOS leakage)
+
+| Algorithm           | Train Accuracy | Test Accuracy | ROC AUC | Precision (class 1) | Recall (class 1) | F1-score (class 1) |
+|--------------------|----------------|---------------|---------|----------------------|-------------------|---------------------|
+| Logistic Regression| 0.8279         | 0.7350        | 0.8008  | 0.7855               | 0.7006            | 0.7406              |
+| Naive Bayes        | 0.7900         | 0.7083        | 0.6972  | 0.7899               | 0.6265            | 0.6988              |
+| KNN                | 0.6608         | 0.4767        | 0.5074  | 0.5217               | 0.3704            | 0.4332              |
+| Decision Tree      | 0.8325         | 0.7867        | 0.8100  | 0.8792               | 0.7099            | 0.8014              |
+| SVM                | 0.8371         | 0.7517        | 0.8182  | 0.8405               | 0.6667            | 0.7435              |
+
+
 
 ## Installation
 
