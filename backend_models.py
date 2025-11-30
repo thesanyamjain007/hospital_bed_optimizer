@@ -88,7 +88,12 @@ def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
 
     # 5. Split into X and y
     y = df[target_col]
-    X = df.drop(columns=[target_col])
+
+    # Columns that should NOT be used as features (to avoid leakage / IDs)
+
+    leak_or_id_cols = ["length_of_stay", "eid", "vdate", "facid"]
+    cols_to_drop = [target_col] + [c for c in leak_or_id_cols if c in df.columns]
+    X = df.drop(columns=cols_to_drop)
 
     # sanity check – avoid single-class target
     class_counts = y.value_counts()
@@ -191,19 +196,22 @@ def train_all_algorithms(X_train, X_test, y_train, y_test):
     """
     algorithms = {
         "Logistic Regression": LogisticRegression(
-            max_iter=500,
+            max_iter=1000,
             solver="lbfgs",
             n_jobs=-1
         ),
         "Naive Bayes": GaussianNB(),
         "KNN": KNeighborsClassifier(
-            n_neighbors=5,
+            n_neighbors=7,
             n_jobs=-1
         ),
         "Decision Tree": DecisionTreeClassifier(
-            max_depth=8,
+            max_depth=8,               # try 4–8
+            min_samples_split=10,
+            min_samples_leaf=5,
             class_weight='balanced',
             random_state=42
+
         ),
         # Linear SVM without probability=True for speed
         "SVM": SVC(
