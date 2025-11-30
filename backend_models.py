@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import joblib
 import io
+
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.pipeline import Pipeline
@@ -22,7 +23,6 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC
 
-
 # --------------- Data loading ---------------
 
 def load_dataset(path: str) -> pd.DataFrame:
@@ -37,25 +37,34 @@ def load_dataset(path: str) -> pd.DataFrame:
     else:
         raise ValueError("Unsupported file format. Use CSV or Excel.")
 
-
 # --------------- Processing (shared for all POCs) ---------------
 
 def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
     """
-    Full processing pipeline BEFORE EDA and BEFORE training:
-    - Drop unwanted columns (optional – done in caller)
-    - Fill missing values (numeric->median, categorical->mode)
-    - Outlier clipping (IQR) on numeric
-    - Encode categoricals (LabelEncoder for binary, one-hot for multi-class)
-    Returns:
-    - X_processed (features)
-    - y (target)
-    - label_encoders (for binary categoricals)
+    Full processing pipeline BEFORE EDA and BEFORE training.
     """
+
+    # 1. Map real columns to internal schema
+    column_map = {
+        "eid": "patient_id",
+        "lengthofstay": "length_of_stay"
+    }
+    df = df.rename(columns={k: v for k, v in column_map.items() if k in df.columns})
+
+    # 2. Create binary target from length_of_stay if not present
+    if target_col not in df.columns:
+        if "length_of_stay" not in df.columns:
+            raise ValueError(
+                f"Target column '{target_col}' not found and 'length_of_stay' "
+                "is missing. Please ensure the dataset has 'lengthofstay'."
+            )
+        # Long stay rule: LOS >= 4 days -> 1, else 0 (adjustable)
+        df[target_col] = (df["length_of_stay"] >= 4).astype(int)
+
     if target_col not in df.columns:
         raise ValueError(f"Target column '{target_col}' not found.")
 
-    # Fill missing values
+    # 3. Fill missing values
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = df.select_dtypes(exclude=[np.number]).columns.tolist()
 
@@ -68,7 +77,7 @@ def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
         else:
             df[col].fillna(df[col].mode()[0], inplace=True)
 
-    # Outlier handling: IQR clipping
+    # 4. Outlier handling: IQR clipping
     for col in num_cols:
         Q1 = df[col].quantile(0.25)
         Q3 = df[col].quantile(0.75)
@@ -77,11 +86,20 @@ def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
         high = Q3 + 1.5 * IQR
         df[col] = df[col].clip(low, high)
 
-    # Split into X and y
+    # 5. Split into X and y
     y = df[target_col]
     X = df.drop(columns=[target_col])
 
-    # Encode categoricals
+    # sanity check – avoid single-class target
+    class_counts = y.value_counts()
+    if len(class_counts) < 2:
+        raise ValueError(
+            f"Target has only one class after thresholding. "
+            f"Counts: {class_counts.to_dict()}. "
+            f"Try a different LOS threshold in process_dataset."
+        )
+
+    # 6. Encode categoricals
     num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
     cat_cols = X.select_dtypes(exclude=[np.number]).columns.tolist()
 
@@ -102,7 +120,6 @@ def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
 
     return X_enc, y, label_encoders
 
-
 # --------------- Train/test split ---------------
 
 def create_train_test_splits(X, y, test_size=0.3, random_state=42):
@@ -113,7 +130,6 @@ def create_train_test_splits(X, y, test_size=0.3, random_state=42):
         X, y, test_size=test_size, random_state=random_state, stratify=y
     )
     return X_train, X_test, y_train, y_test
-
 
 # --------------- Single algorithm POC helper ---------------
 
@@ -166,19 +182,35 @@ def train_and_evaluate_model(model_name, estimator, X_train, X_test, y_train, y_
         "opt_thr": opt_thr
     }
 
-
 # --------------- Train all 5 algorithms (5 POCs) ---------------
 
 def train_all_algorithms(X_train, X_test, y_train, y_test):
     """
     Train all 5 algorithms and return a dict of results.
+    Lighter / faster model configurations.
     """
     algorithms = {
-        "Logistic Regression": LogisticRegression(max_iter=1000),
+        "Logistic Regression": LogisticRegression(
+            max_iter=500,
+            solver="lbfgs",
+            n_jobs=-1
+        ),
         "Naive Bayes": GaussianNB(),
-        "KNN": KNeighborsClassifier(n_neighbors=5),
-        "Decision Tree": DecisionTreeClassifier(random_state=42),
-        "SVM": SVC(kernel="rbf", probability=True, random_state=42)
+        "KNN": KNeighborsClassifier(
+            n_neighbors=5,
+            n_jobs=-1
+        ),
+        "Decision Tree": DecisionTreeClassifier(
+            max_depth=8,
+            class_weight='balanced',
+            random_state=42
+        ),
+        # Linear SVM without probability=True for speed
+        "SVM": SVC(
+            kernel="linear",
+            probability=False,
+            random_state=42
+        )
     }
 
     results = {}
@@ -192,7 +224,6 @@ def train_all_algorithms(X_train, X_test, y_train, y_test):
             y_test=y_test
         )
     return results
-
 
 # --------------- Build comparison DataFrame ---------------
 
@@ -223,8 +254,7 @@ def build_comparison_table(results: dict) -> pd.DataFrame:
     comp_df = pd.DataFrame(rows)
     return comp_df
 
-
-# Export in Joblib
+# --------- Model export / import helpers ---------
 
 def export_model(pipeline, filename="best_model.joblib"):
     """Saves the trained model pipeline to a file."""
@@ -233,15 +263,13 @@ def export_model(pipeline, filename="best_model.joblib"):
         return f"Model successfully exported to {filename}"
     except Exception as e:
         return f"Error exporting model: {e}"
-    
+
 def get_model_bytes(pipeline):
     """Serializes the model pipeline to an in-memory byte buffer."""
     buffer = io.BytesIO()
     joblib.dump(pipeline, buffer)
     buffer.seek(0)  # Rewind the buffer to the beginning
     return buffer.read()
-
-# --- ADD TO BOTTOM OF backend_models.py ---
 
 def load_uploaded_pipeline(file_obj):
     """
