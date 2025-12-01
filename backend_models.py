@@ -14,7 +14,7 @@ from sklearn.metrics import (
     confusion_matrix,
     classification_report,
     roc_curve,
-    auc
+    auc,
 )
 
 from sklearn.linear_model import LogisticRegression
@@ -23,7 +23,9 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC
 
+
 # --------------- Data loading ---------------
+
 
 def load_dataset(path: str) -> pd.DataFrame:
     """
@@ -37,7 +39,9 @@ def load_dataset(path: str) -> pd.DataFrame:
     else:
         raise ValueError("Unsupported file format. Use CSV or Excel.")
 
+
 # --------------- Processing (shared for all POCs) ---------------
+
 
 def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
     """
@@ -47,7 +51,7 @@ def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
     # 1. Map real columns to internal schema
     column_map = {
         "eid": "patient_id",
-        "lengthofstay": "length_of_stay"
+        "lengthofstay": "length_of_stay",
     }
     df = df.rename(columns={k: v for k, v in column_map.items() if k in df.columns})
 
@@ -90,7 +94,6 @@ def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
     y = df[target_col]
 
     # Columns that should NOT be used as features (to avoid leakage / IDs)
-
     leak_or_id_cols = ["length_of_stay", "eid", "vdate", "facid"]
     cols_to_drop = [target_col] + [c for c in leak_or_id_cols if c in df.columns]
     X = df.drop(columns=cols_to_drop)
@@ -123,9 +126,12 @@ def process_dataset(df: pd.DataFrame, target_col: str = "long_stay_label"):
     if multi_cat:
         X_enc = pd.get_dummies(X_enc, columns=multi_cat, drop_first=True)
 
-    return X_enc, y, label_encoders
+    feature_names = X_enc.columns.tolist()
+    return X_enc, y, label_encoders, feature_names
+
 
 # --------------- Train/test split ---------------
+
 
 def create_train_test_splits(X, y, test_size=0.3, random_state=42):
     """
@@ -136,7 +142,9 @@ def create_train_test_splits(X, y, test_size=0.3, random_state=42):
     )
     return X_train, X_test, y_train, y_test
 
+
 # --------------- Single algorithm POC helper ---------------
+
 
 def train_and_evaluate_model(model_name, estimator, X_train, X_test, y_train, y_test):
     """
@@ -145,7 +153,7 @@ def train_and_evaluate_model(model_name, estimator, X_train, X_test, y_train, y_
     """
     pipe = Pipeline([
         ("scaler", StandardScaler()),
-        ("model", estimator)
+        ("model", estimator),
     ])
 
     pipe.fit(X_train, y_train)
@@ -184,10 +192,12 @@ def train_and_evaluate_model(model_name, estimator, X_train, X_test, y_train, y_
         "tpr": tpr,
         "thresholds": thresholds,
         "roc_auc": roc_auc,
-        "opt_thr": opt_thr
+        "opt_thr": opt_thr,
     }
 
+
 # --------------- Train all 5 algorithms (5 POCs) ---------------
+
 
 def train_all_algorithms(X_train, X_test, y_train, y_test):
     """
@@ -198,27 +208,26 @@ def train_all_algorithms(X_train, X_test, y_train, y_test):
         "Logistic Regression": LogisticRegression(
             max_iter=1000,
             solver="lbfgs",
-            n_jobs=-1
+            n_jobs=-1,
         ),
         "Naive Bayes": GaussianNB(),
         "KNN": KNeighborsClassifier(
             n_neighbors=7,
-            n_jobs=-1
+            n_jobs=-1,
         ),
         "Decision Tree": DecisionTreeClassifier(
-            max_depth=8,               # try 4–8
+            max_depth=8,
             min_samples_split=10,
             min_samples_leaf=5,
-            class_weight='balanced',
-            random_state=42
-
+            class_weight="balanced",
+            random_state=42,
         ),
         # Linear SVM without probability=True for speed
         "SVM": SVC(
             kernel="linear",
             probability=False,
-            random_state=42
-        )
+            random_state=42,
+        ),
     }
 
     results = {}
@@ -229,11 +238,13 @@ def train_all_algorithms(X_train, X_test, y_train, y_test):
             X_train=X_train,
             X_test=X_test,
             y_train=y_train,
-            y_test=y_test
+            y_test=y_test,
         )
     return results
 
+
 # --------------- Build comparison DataFrame ---------------
+
 
 def build_comparison_table(results: dict) -> pd.DataFrame:
     """
@@ -256,13 +267,44 @@ def build_comparison_table(results: dict) -> pd.DataFrame:
             "ROC AUC": res["roc_auc"],
             "Precision (class 1)": prec,
             "Recall (class 1)": rec,
-            "F1-score (class 1)": f1
+            "F1-score (class 1)": f1,
         })
 
     comp_df = pd.DataFrame(rows)
     return comp_df
 
+
+# --------------- Feature importance helper ---------------
+
+
+def get_decision_tree_importance(results: dict, feature_names):
+    """
+    Return a DataFrame with feature importances for the Decision Tree model.
+    If the model is not a tree or importances are missing, returns None.
+    """
+    if "Decision Tree" not in results:
+        return None
+
+    pipe = results["Decision Tree"]["pipeline"]
+    model = pipe.named_steps.get("model", None)
+
+    if model is None or not hasattr(model, "feature_importances_"):
+        return None
+
+    importances = model.feature_importances_
+    if len(importances) != len(feature_names):
+        return None
+
+    df_imp = pd.DataFrame({
+        "Feature": feature_names,
+        "Importance": importances,
+    }).sort_values("Importance", ascending=False)
+
+    return df_imp
+
+
 # --------- Model export / import helpers ---------
+
 
 def export_model(pipeline, filename="best_model.joblib"):
     """Saves the trained model pipeline to a file."""
@@ -272,6 +314,7 @@ def export_model(pipeline, filename="best_model.joblib"):
     except Exception as e:
         return f"Error exporting model: {e}"
 
+
 def get_model_bytes(pipeline):
     """Serializes the model pipeline to an in-memory byte buffer."""
     buffer = io.BytesIO()
@@ -279,81 +322,9 @@ def get_model_bytes(pipeline):
     buffer.seek(0)  # Rewind the buffer to the beginning
     return buffer.read()
 
+
 def load_uploaded_pipeline(file_obj):
     """
     Load a pipeline object from a generic file object (uploaded by Streamlit).
     """
     return joblib.load(file_obj)
-
-# ---------------------------------------------------------
-# NEW: Production Prediction Engine
-# ---------------------------------------------------------
-
-def predict_length_of_stay(model_pipeline, input_data: dict):
-    """
-    Takes a dictionary of 23 raw user inputs, preprocesses them 
-    (converting text to numbers), and returns the model's prediction.
-    """
-    
-    # 1. Define the exact feature list in the order the model expects.
-    feature_order = [
-        'rcount', 'gender', 'dialysisrenalendstage', 'asthma', 'irondef', 'pneum', 
-        'substancedependence', 'psychologicaldisordermajor', 'depress', 'psychother', 
-        'fibrosisandother', 'malnutrition', 'hemo', 'hematocrit', 'neutrophils', 
-        'sodium', 'glucose', 'bloodureanitro', 'creatinine', 'bmi', 'pulse', 
-        'respiration', 'secondarydiagnosisnonicd9'
-    ]
-    
-    # 2. Preprocess the Raw Inputs (Mapping Logic)
-    processed_data = input_data.copy()
-    
-    # Gender: Male -> 1, Female -> 0
-    if isinstance(processed_data.get('gender'), str):
-        processed_data['gender'] = 1 if processed_data['gender'].lower().startswith('m') else 0
-        
-    # RCount: Handle "5+"
-    if str(processed_data.get('rcount')) == "5+":
-        processed_data['rcount'] = 5
-    else:
-        processed_data['rcount'] = int(processed_data['rcount'])
-
-    # Ensure all Yes/No flags are integers (0 or 1)
-    binary_cols = [
-        'dialysisrenalendstage', 'asthma', 'irondef', 'pneum', 'substancedependence',
-        'psychologicaldisordermajor', 'depress', 'psychother', 'fibrosisandother', 
-        'malnutrition', 'hemo'
-    ]
-    for col in binary_cols:
-        val = processed_data.get(col)
-        if isinstance(val, str):
-            processed_data[col] = 1 if val.lower() in ['yes', 'true', '1'] else 0
-        else:
-            processed_data[col] = int(val)
-
-    # 3. Create DataFrame for Prediction
-    try:
-        df_single = pd.DataFrame([processed_data])
-        df_single = df_single[feature_order]
-    except KeyError as e:
-        return {"error": f"Missing required data field: {e}"}
-
-    # 4. Make Prediction
-    try:
-        prediction_class = model_pipeline.predict(df_single)[0]
-        
-        # Try to get probability if the model supports it
-        if hasattr(model_pipeline, "predict_proba"):
-            probability = model_pipeline.predict_proba(df_single)[0][1] # Prob of class 1 (Long Stay)
-        else:
-            probability = float(prediction_class)
-
-        result_label = "Long Stay (>7 days)" if prediction_class == 1 else "Short Stay (0-7 days)"
-        
-        return {
-            "prediction_label": result_label,
-            "prediction_class": int(prediction_class),
-            "probability_long_stay": round(probability, 4)
-        }
-        
-    except Exception as e:
-        return {"error": f"Prediction failed: {str(e)}"}
