@@ -15,7 +15,8 @@ from backend_models import (
     build_comparison_table,
     export_model,
     get_model_bytes,
-    load_uploaded_pipeline
+    load_uploaded_pipeline,
+    predict_length_of_stay
 )
 
 st.set_page_config(
@@ -147,8 +148,8 @@ elif page == "Processing + EDA":
 
             st.subheader("Correlation Heatmap (Reds)")
             corr = df.select_dtypes(include=[np.number]).corr()
-            plt.figure(figsize=(10, 7))
-            sns.heatmap(corr, cmap="Reds", annot=False)
+            plt.figure(figsize=(14, 12))
+            sns.heatmap(corr, cmap="Reds", annot=True, fmt=".2f", annot_kws={'size': 8})
             plt.title("Correlation Heatmap – Reds")
             st.pyplot(plt.gcf())
 
@@ -317,63 +318,100 @@ elif page == "Predict (Saved Model)":
     if pipeline is not None:
         st.divider()
         st.subheader("2. Enter Patient Data")
+        
         input_method = st.radio("Choose input method:", ["Manual Entry ✍️", "Upload File 📂"])
 
-        # OPTION A: MANUAL ENTRY
+        # OPTION A: MANUAL ENTRY (Updated with 23 Fields)
         if input_method == "Manual Entry ✍️":
-            st.info("Enter details for a single patient below.")
+            st.info("Enter the 23 clinical data points below to generate a prediction.")
 
             with st.form("prediction_form"):
-                st.write("### Patient Details")
+                col1, col2, col3 = st.columns(3)
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    val1 = st.number_input("Age", min_value=0, max_value=120, value=30)
-                    val2 = st.selectbox("Gender", ["Male", "Female"])
-                    val3 = st.number_input("Admission Deposit", value=0.0)
+                # --- Column 1: Demographics & History ---
+                with col1:
+                    st.markdown("#### Demographics")
+                    gender = st.selectbox("Gender", ["Male", "Female"], index=0) 
+                    # Default "5+" as requested
+                    rcount = st.selectbox("Readmissions (180 days)", ["0", "1", "2", "3", "4", "5+"], index=5) 
 
-                with c2:
-                    val4 = st.selectbox("Department", ["gynecology", "anesthesia",
-                                                       "radiotherapy", "TB & Chest disease", "surgery"])
-                    val5 = st.selectbox("Type of Admission", ["Trauma", "Emergency", "Urgent"])
-                    val6 = st.number_input("Visitors with Patient", min_value=0, value=2)
+                    st.markdown("#### Conditions (Yes/No)")
+                    dialysis = st.selectbox("Dialysis / Renal End Stage", ["No", "Yes"], index=0)
+                    # Default "Yes" as requested
+                    asthma = st.selectbox("Asthma", ["No", "Yes"], index=1) 
+                    irondef = st.selectbox("Iron Deficiency", ["No", "Yes"], index=0)
+                    pneum = st.selectbox("Pneumonia", ["No", "Yes"], index=0)
+                    substancedependence = st.selectbox("Substance Dependence", ["No", "Yes"], index=0)
+                    psych_major = st.selectbox("Psychological Disorder (Major)", ["No", "Yes"], index=0)
+                    depression = st.selectbox("Depression", ["No", "Yes"], index=0)
+                
+                # --- Column 2: Vitals & Labs (With your default values) ---
+                with col2:
+                    st.markdown("#### Lab Results")
+                    hematocrit = st.number_input("Hematocrit", value=11.5)
+                    neutrophils = st.number_input("Neutrophils", value=14.2)
+                    sodium = st.number_input("Sodium", value=138.0)
+                    glucose = st.number_input("Glucose", value=150.0)
+                    bun = st.number_input("Blood Urea Nitrogen", value=12.0)
+                    creatinine = st.number_input("Creatinine", value=1.2)
+                    bmi = st.number_input("BMI", value=28.5)
+                
+                # --- Column 3: Vitals & Other ---
+                with col3:
+                    st.markdown("#### Vitals & Other")
+                    pulse = st.number_input("Pulse", value=72)
+                    respiration = st.number_input("Respiration", value=6.5)
+                    sec_diag = st.number_input("Secondary Diagnosis Key", value=2, min_value=0, step=1)
+                    
+                    st.markdown("#### Other Conditions")
+                    psych_other = st.selectbox("Psych Disorder (Other)", ["No", "Yes"], index=0)
+                    fibrosis = st.selectbox("Fibrosis / Other", ["No", "Yes"], index=0)
+                    malnutrition = st.selectbox("Malnutrition", ["No", "Yes"], index=0)
+                    hemo_disorder = st.selectbox("Hemo (Blood Disorder)", ["No", "Yes"], index=0)
 
-                submitted = st.form_submit_button("Predict Result")
+                # Submit Button
+                submitted = st.form_submit_button("🚀 Predict Result")
 
             if submitted:
+                # Map inputs to backend structure
                 input_data = {
-                    "age": [val1],
-                    "gender": [val2],
-                    "Admission_Deposit": [val3],
-                    "Department": [val4],
-                    "Type of Admission": [val5],
-                    "Visitors with Patient": [val6],
-                    "long_stay_label": [0]  # dummy target
+                    'rcount': rcount, 'gender': gender, 'dialysisrenalendstage': dialysis,
+                    'asthma': asthma, 'irondef': irondef, 'pneum': pneum,
+                    'substancedependence': substancedependence, 'psychologicaldisordermajor': psych_major,
+                    'depress': depression, 'psychother': psych_other, 'fibrosisandother': fibrosis,
+                    'malnutrition': malnutrition, 'hemo': hemo_disorder, 'hematocrit': hematocrit,
+                    'neutrophils': neutrophils, 'sodium': sodium, 'glucose': glucose,
+                    'bloodureanitro': bun, 'creatinine': creatinine, 'bmi': bmi,
+                    'pulse': pulse, 'respiration': respiration, 'secondarydiagnosisnonicd9': sec_diag
                 }
 
-                df_single = pd.DataFrame(input_data)
-                st.write("Input Data Preview:", df_single.drop(columns=["long_stay_label"]))
-
+                # Call the prediction function
                 try:
-                    X_single = df_single.drop(columns=["long_stay_label"])
-                    prediction = pipeline.predict(X_single)[0]
-                    if hasattr(pipeline, "predict_proba"):
-                        probability = pipeline.predict_proba(X_single)[0][1]
-                    else:
-                        probability = 0.0
+                    # Note: Ensure 'predict_length_of_stay' is imported from backend_models
+                    result = predict_length_of_stay(pipeline, input_data)
 
-                    st.divider()
-                    if prediction == 1:
-                        st.error(f"⚠️ Prediction: Long Stay (High Risk)\nProbability: {probability:.2%}")
+                    if "error" in result:
+                        st.error(result["error"])
                     else:
-                        st.success(f"✅ Prediction: Short Stay (Low Risk)\nProbability: {probability:.2%}")
+                        label = result["prediction_label"]
+                        prob = result["probability_long_stay"]
+                        
+                        st.divider()
+                        if result["prediction_class"] == 1:
+                            st.error(f"⚠️ Prediction: {label}")
+                            st.metric("Probability of Long Stay", f"{prob:.2%}")
+                        else:
+                            st.success(f"✅ Prediction: {label}")
+                            st.metric("Probability of Long Stay", f"{prob:.2%}")
+                
+                except NameError:
+                    st.error("Missing function: Please add 'predict_length_of_stay' to your imports.")
                 except Exception as e:
                     st.error(f"Prediction Error: {e}")
-                    st.warning("Make sure the input fields above match ALL columns used in your training data.")
 
-        # OPTION B: FILE UPLOAD
+        # OPTION B: FILE UPLOAD (Batch Prediction)
         elif input_method == "Upload File 📂":
-            st.info("Upload a CSV/Excel file with multiple patients.")
+            st.info("Upload a CSV/Excel file with patient data.")
             data_file = st.file_uploader("Upload new data", type=["csv", "xlsx"])
 
             if data_file is not None:
@@ -382,31 +420,32 @@ elif page == "Predict (Saved Model)":
                     st.write(f"Uploaded {df_new.shape[0]} patients.")
 
                     if st.button("Run Batch Prediction"):
+                        # Ensure columns exist (you may need to add preprocessing here similar to manual entry if raw data differs)
+                        # For now, assuming batch file matches training schema
                         if "long_stay_label" not in df_new.columns:
+                            # Create dummy target if missing, just to allow drop
                             df_new["long_stay_label"] = 0
-
-                        X_new = df_new.drop(columns=["long_stay_label"])
-
+                        
+                        # Note: In a real batch scenario, you'd likely need to apply the same 
+                        # preprocessing (process_dataset) to X_new before predicting.
+                        X_new = df_new.drop(columns=["long_stay_label"], errors='ignore')
+                        
                         preds = pipeline.predict(X_new)
-                        probs = pipeline.predict_proba(X_new)[:, 1] if hasattr(pipeline, "predict_proba") else [0]*len(preds)
+                        if hasattr(pipeline, "predict_proba"):
+                            probs = pipeline.predict_proba(X_new)[:, 1]
+                        else:
+                            probs = [0.0] * len(preds)
 
-                        results_df = df_new.drop(columns=["long_stay_label"]).copy()
+                        results_df = df_new.copy()
                         results_df["Predicted_Label"] = preds
                         results_df["Probability_Long_Stay"] = probs
 
                         st.subheader("Prediction Results")
-
-                        def highlight_risk(val):
-                            return 'background-color: #ffcccb' if val == 1 else ''
-
-                        st.dataframe(results_df.style.applymap(highlight_risk, subset=['Predicted_Label']))
-
+                        st.dataframe(results_df.style.apply(lambda x: ['background-color: #ffcccb' if v == 1 else '' for v in x], subset=['Predicted_Label']))
+                        
+                        # Download button logic...
                         csv = results_df.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            "Download Predictions as CSV",
-                            csv,
-                            "patient_predictions.csv",
-                            "text/csv"
-                        )
+                        st.download_button("Download CSV", csv, "predictions.csv", "text/csv")
+
                 except Exception as e:
                     st.error(f"Error processing file: {e}")
